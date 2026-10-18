@@ -1,4 +1,5 @@
 from rest_framework import viewsets, permissions
+from rest_framework.exceptions import PermissionDenied
 from .models import Product
 from .serializers import ProductPublicSerializer, ProductOwnerSerializer, ProductWriteSerializer
 
@@ -12,6 +13,7 @@ def is_owner_or_worker(user, shop):
 
 
 class ProductViewSet(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     queryset = Product.objects.all()
 
     def get_serializer_class(self):
@@ -34,15 +36,15 @@ class ProductViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         shop = serializer.validated_data["shop"]
         if not is_owner_or_worker(self.request.user, shop):
-            raise permissions.PermissionDenied()
+            raise PermissionDenied()
         serializer.save()
 
     def perform_update(self, serializer):
         if not is_owner_or_worker(self.request.user, serializer.instance.shop):
-            raise permissions.PermissionDenied()
+            raise PermissionDenied()
         serializer.save()
 
     def perform_destroy(self, instance):
         if not is_owner_or_worker(self.request.user, instance.shop):
-            raise permissions.PermissionDenied()
+            raise PermissionDenied()
         instance.delete()

@@ -1,5 +1,6 @@
 from django.db import transaction
 from rest_framework import viewsets, permissions
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError
 from .models import StockAdjustment
 from .serializers import StockAdjustmentSerializer
@@ -24,7 +25,7 @@ class StockAdjustmentViewSet(viewsets.ModelViewSet):
         user = self.request.user
         shop = product.shop
         if not (user.is_owner and getattr(user, "owned_shop", None) == shop) and not (user.is_worker and user.assigned_shop_id == shop.id and user.is_worker_active):
-            raise permissions.PermissionDenied()
+            raise PermissionDenied()
         delta = serializer.validated_data["delta"]
         with transaction.atomic():
             p = Product.objects.select_for_update().get(pk=product.pk)

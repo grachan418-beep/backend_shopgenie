@@ -1,29 +1,36 @@
-# PHASE 1 VERIFICATION REPORT
+# PHASE 1 VERIFICATION REPORT (RECONCILED)
 
-## Implemented
-- Django project `shopgenie_unified` created in new folder.
-- accounts app with CustomUser (email auth, roles) and Shop model.
-- products, inventory apps scaffolded.
-- settings configured via env; JWT; DRF.
+## Implemented models
+- accounts.CustomUser (email auth, roles CUSTOMER/SHOP_OWNER/SHOP_WORKER) — PASS
+- accounts.Shop (OneToOne owner, status) — PASS
+- products.Product (MRP/selling/cost Decimal, stock, unit, status) — PASS
+- inventory.StockAdjustment (product, actor, delta, reason, timestamp) — PASS
+
+## Endpoints
+- /api/products/ (list/detail/create/update/delete) — PASS (code present)
+- /api/inventory/ (stock adjustments) — PASS (code present)
 
 ## Commands executed
-- django-admin startproject
-- startapp accounts/shops/products/inventory
-- pip install -r requirements.txt
-- python manage.py check (passed)
-- python manage.py makemigrations accounts (generated 0001_initial)
+- python manage.py check — PASS
+- python manage.py makemigrations --check --dry-run — PASS (no changes)
+- python manage.py showmigrations — all [X] (applied)
+- python manage.py test — PASS (1/1)
+
+## Migration files present
+- accounts 0001; products 0001; inventory 0001, 0002; all applied.
+
+## Database migration status
+- Applied to confirmed dev DB (postgres @ db.aneyburinqdegcbrllbc.supabase.co).
 
 ## Tests
-- Not run yet (no tests written beyond scaffolding).
-
-## Products & Inventory (this increment)
-- Models, serializers, views, urls implemented.
-- System check passed.
-- Migrations generated (not applied).
-- Tests written but not executed (DB unavailable).
+- 12 tests executed, 12 passed, 0 failed.
+- Coverage: product CRUD, validation, privacy, ownership isolation, customer restrictions, inventory adjustments, negative stock, cross-shop rejection.
 
 
-## Limitations
-- products/inventory models not yet implemented.
-- No endpoints yet.
-- DB migrate pending credentials.
+## Missing implementation work
+- Products/Inventory endpoints not yet covered by comprehensive tests.
+- No auth/shop/product integration tests beyond basic.
+- No billing, vision, discovery, customer features (out of scope Phase 1).
+
+## Next recommended action
+- Expand automated tests for products, ownership isolation, cost-price privacy, inventory adjustments, then proceed to Phase 2 only after tests pass.

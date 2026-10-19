@@ -3,9 +3,11 @@ from .models import Product
 
 
 class ProductPublicSerializer(serializers.ModelSerializer):
+    store_name = serializers.CharField(source="shop.name", read_only=True)
+
     class Meta:
         model = Product
-        fields = ["id", "shop", "name", "category", "description", "mrp", "selling_price", "stock_quantity", "unit", "image_url", "status"]
+        fields = ["id", "shop", "name", "category", "description", "mrp", "selling_price", "stock_quantity", "unit", "image_url", "store_name"]
 
 
 class ProductOwnerSerializer(serializers.ModelSerializer):

@@ -74,6 +74,90 @@ class ProductApiTests(TestCase):
         self.assertIn(res.status_code, (403, 404))
 
 
+class ProductVisibilityTests(TestCase):
+    def setUp(self):
+        self.o_pub = User.objects.create_user(email="o_pub@x.com", username="o_pub", password="pass12345", role="SHOP_OWNER")
+        self.o_draft = User.objects.create_user(email="o_draft@x.com", username="o_draft", password="pass12345", role="SHOP_OWNER")
+        self.o_susp = User.objects.create_user(email="o_susp@x.com", username="o_susp", password="pass12345", role="SHOP_OWNER")
+        self.pub_shop = Shop.objects.create(owner=self.o_pub, name="Published Shop", status="PUBLISHED")
+        self.draft_shop = Shop.objects.create(owner=self.o_draft, name="Draft Shop", status="DRAFT")
+        self.susp_shop = Shop.objects.create(owner=self.o_susp, name="Suspended Shop", status="SUSPENDED")
+        self.pub_product = Product.objects.create(shop=self.pub_shop, name="Pub Item", mrp=Decimal("10"), selling_price=Decimal("8"), cost_price=Decimal("5"), stock_quantity=Decimal("5"), status="PUBLISHED")
+        self.draft_product = Product.objects.create(shop=self.pub_shop, name="Draft Item", mrp=Decimal("10"), selling_price=Decimal("8"), cost_price=Decimal("5"), stock_quantity=Decimal("5"), status="DRAFT")
+        self.pub_prod_in_draft_shop = Product.objects.create(shop=self.draft_shop, name="DraftShop Item", mrp=Decimal("10"), selling_price=Decimal("8"), cost_price=Decimal("5"), stock_quantity=Decimal("5"), status="PUBLISHED")
+        self.pub_prod_in_susp_shop = Product.objects.create(shop=self.susp_shop, name="SuspShop Item", mrp=Decimal("10"), selling_price=Decimal("8"), cost_price=Decimal("5"), stock_quantity=Decimal("5"), status="PUBLISHED")
+        self.client = APIClient()
+
+    def test_public_listing_excludes_unpublished_products(self):
+        resp = self.client.get("/api/products/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        names = [p["name"] for p in resp.data["results"]]
+        self.assertIn("Pub Item", names)
+        self.assertNotIn("Draft Item", names)
+
+    def test_public_listing_excludes_products_from_unpublished_shops(self):
+        resp = self.client.get("/api/products/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        names = [p["name"] for p in resp.data["results"]]
+        self.assertNotIn("DraftShop Item", names)
+        self.assertNotIn("SuspShop Item", names)
+
+    def test_public_detail_blocks_unpublished_shop(self):
+        resp = self.client.get(f"/api/products/{self.pub_prod_in_draft_shop.id}/")
+        self.assertEqual(resp.status_code, 404, resp.content)
+
+    def test_public_detail_blocks_suspended_shop(self):
+        resp = self.client.get(f"/api/products/{self.pub_prod_in_susp_shop.id}/")
+        self.assertEqual(resp.status_code, 404, resp.content)
+
+    def test_public_detail_visible_published(self):
+        resp = self.client.get(f"/api/products/{self.pub_product.id}/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.data["name"], "Pub Item")
+
+    def test_public_store_name_present(self):
+        resp = self.client.get(f"/api/products/{self.pub_product.id}/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.data["store_name"], "Published Shop")
+
+    def test_public_no_cost_price(self):
+        resp = self.client.get(f"/api/products/{self.pub_product.id}/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertNotIn("cost_price", resp.data)
+
+    def test_public_no_owner_fields(self):
+        resp = self.client.get(f"/api/products/{self.pub_product.id}/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        for field in ["owner", "owner_username", "email"]:
+            self.assertNotIn(field, resp.data)
+
+    def test_search_by_name(self):
+        resp = self.client.get("/api/products/?search=Pub Item")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        names = [p["name"] for p in resp.data["results"]]
+        self.assertEqual(names, ["Pub Item"])
+
+    def test_filter_by_shop(self):
+        resp = self.client.get(f"/api/products/?shop={self.pub_shop.id}")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        names = [p["name"] for p in resp.data["results"]]
+        self.assertIn("Pub Item", names)
+
+    def test_filter_by_category(self):
+        Product.objects.create(shop=self.pub_shop, name="Electronic Item", category="Electronics", mrp=Decimal("10"), selling_price=Decimal("8"), cost_price=Decimal("5"), stock_quantity=Decimal("1"), status="PUBLISHED")
+        resp = self.client.get("/api/products/?category=Electronics")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        names = [p["name"] for p in resp.data["results"]]
+        self.assertIn("Electronic Item", names)
+
+    def test_pagination(self):
+        resp = self.client.get("/api/products/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIn("count", resp.data)
+        self.assertIn("results", resp.data)
+
+
+
 class InventoryApiTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create_user(email="owner@test.com", username="owner", password="pass12345", role="SHOP_OWNER")

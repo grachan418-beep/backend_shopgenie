@@ -1,5 +1,8 @@
+from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import viewsets, permissions
+from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.exceptions import PermissionDenied
+from accounts.models import Shop
 from .models import Product
 from .serializers import ProductPublicSerializer, ProductOwnerSerializer, ProductWriteSerializer
 
@@ -15,6 +18,11 @@ def is_owner_or_worker(user, shop):
 class ProductViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     queryset = Product.objects.all()
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ["shop", "category"]
+    search_fields = ["name", "category"]
+    ordering_fields = ["name", "category", "mrp", "selling_price", "created_at"]
+    ordering = ["-created_at"]
 
     def get_serializer_class(self):
         if self.action in ("create", "update", "partial_update"):
@@ -31,7 +39,7 @@ class ProductViewSet(viewsets.ModelViewSet):
             shop = user.effective_shop
             if shop:
                 return qs.filter(shop=shop)
-        return qs.filter(status=Product.Status.PUBLISHED)
+        return qs.filter(status=Product.Status.PUBLISHED, shop__status=Shop.Status.PUBLISHED)
 
     def perform_create(self, serializer):
         shop = serializer.validated_data["shop"]

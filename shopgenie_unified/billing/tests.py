@@ -215,3 +215,257 @@ class BillingEndpointTests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
         self.assertEqual(resp.data["id"], r.data["id"])
         self.assertEqual(len(resp.data["items"]), 1)
+
+
+class FlutterInvoiceCompatibilityTests(TestCase):
+    def setUp(self):
+        self.owner, self.shop = make_owner("o@x.com", "owner", "S1")
+        self.p1 = make_product(self.shop, "Apple", Decimal("10"), "8.00")
+        self.p2 = make_product(self.shop, "Banana", Decimal("5"), "4.00")
+        self.worker = make_worker("w@x.com", "worker", self.shop, can_confirm_bills=True, can_view_invoices=True)
+        self.client = APIClient()
+
+    def _auth(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    def test_flutter_compatible_invoice_success(self):
+        c = self._auth(self.owner)
+        resp = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-compat-1",
+            "payment_mode": "cash",
+            "customer_name": "Walk-in Customer",
+            "customer_phone": "+91 98450 12091",
+            "items": [
+                {"product_id": self.p1.id, "quantity": 2, "unit_price": "999.00"},
+            ],
+        }, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.content)
+        self.assertEqual(resp.data["total_amount"], "16.00")
+        item = resp.data["items"][0]
+        self.assertEqual(item["unit_price"], "8.00")
+        self.assertEqual(item["line_total"], "16.00")
+        self.p1.refresh_from_db()
+        self.assertEqual(self.p1.stock_quantity, Decimal("8"))
+
+    def test_flutter_multi_product_invoice(self):
+        c = self._auth(self.owner)
+        resp = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-compat-2",
+            "payment_mode": "cash",
+            "customer_name": "Customer",
+            "customer_phone": "",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "2"},
+                {"product_id": self.p2.id, "quantity": "1"},
+            ],
+        }, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.content)
+        self.assertEqual(resp.data["total_amount"], "20.00")
+        self.p1.refresh_from_db(); self.p2.refresh_from_db()
+        self.assertEqual(self.p1.stock_quantity, Decimal("8"))
+        self.assertEqual(self.p2.stock_quantity, Decimal("4"))
+
+    def test_flutter_unit_price_ignored(self):
+        c = self._auth(self.owner)
+        resp = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k1",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "2", "unit_price": "999.00"},
+            ],
+        }, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.content)
+        self.assertEqual(resp.data["total_amount"], "16.00")
+        self.assertEqual(resp.data["items"][0]["unit_price"], "8.00")
+
+    def test_flutter_insufficient_stock_rollback(self):
+        c = self._auth(self.owner)
+        resp = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k2",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "999"},
+            ],
+        }, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, resp.content)
+        self.assertEqual(Invoice.objects.count(), 0)
+        self.assertEqual(StockAdjustment.objects.count(), 0)
+        self.p1.refresh_from_db()
+        self.assertEqual(self.p1.stock_quantity, Decimal("10"))
+
+    def test_flutter_cross_shop_product_rejected(self):
+        o2, s2 = make_owner("o2@x.com", "owner2", "S2")
+        p3 = make_product(s2, "Other", Decimal("10"), "8.00")
+        c = self._auth(self.owner)
+        resp = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k3",
+            "items": [
+                {"product_id": p3.id, "quantity": "1"},
+            ],
+        }, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, resp.content)
+        self.assertEqual(Invoice.objects.count(), 0)
+
+    def test_flutter_worker_without_billing_permission_rejected(self):
+        w = make_worker("w2@x.com", "worker2", self.shop, can_confirm_bills=False)
+        c = self._auth(w)
+        resp = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k4",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "1"},
+            ],
+        }, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.content)
+
+    def test_flutter_customer_rejected(self):
+        cust = User.objects.create_user(email="c@x.com", username="cust", password="pass12345", role="CUSTOMER")
+        c = self._auth(cust)
+        resp = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k5",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "1"},
+            ],
+        }, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.content)
+
+    def test_flutter_invalid_quantity_rejected(self):
+        c = self._auth(self.owner)
+        resp = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k6",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "0"},
+            ],
+        }, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, resp.content)
+        resp = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k7",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "-1"},
+            ],
+        }, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, resp.content)
+
+    def test_flutter_idempotency_same_payload(self):
+        c = self._auth(self.owner)
+        r1 = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k8",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "2"},
+            ],
+        }, format="json")
+        self.assertEqual(r1.status_code, status.HTTP_201_CREATED, r1.content)
+        self.p1.refresh_from_db()
+        stock_after_first = self.p1.stock_quantity
+        r2 = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k8",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "2"},
+            ],
+        }, format="json")
+        self.assertEqual(r2.status_code, status.HTTP_200_OK, r2.content)
+        self.assertEqual(r2.data["id"], r1.data["id"])
+        self.p1.refresh_from_db()
+        self.assertEqual(self.p1.stock_quantity, stock_after_first)
+
+    def test_flutter_idempotency_changed_payload_409(self):
+        c = self._auth(self.owner)
+        r1 = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k9",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "2"},
+            ],
+        }, format="json")
+        self.assertEqual(r1.status_code, status.HTTP_201_CREATED, r1.content)
+        r2 = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k9",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "5"},
+            ],
+        }, format="json")
+        self.assertEqual(r2.status_code, status.HTTP_409_CONFLICT, r2.content)
+
+    def test_flutter_unauthenticated_rejected(self):
+        c = APIClient()
+        resp = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k10",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "1"},
+            ],
+        }, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED, resp.content)
+
+    def test_flutter_response_has_expected_fields(self):
+        c = self._auth(self.owner)
+        resp = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k11",
+            "payment_mode": "cash",
+            "customer_name": "Test Customer",
+            "customer_phone": "9876543210",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "1"},
+            ],
+        }, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.content)
+        self.assertIn("id", resp.data)
+        self.assertIn("total_amount", resp.data)
+        self.assertIn("status", resp.data)
+        self.assertIn("items", resp.data)
+        self.assertEqual(len(resp.data["items"]), 1)
+        self.assertEqual(resp.data["items"][0]["product_name"], "Apple")
+
+    def test_flutter_missing_idempotency_key_rejected(self):
+        c = self._auth(self.owner)
+        resp = c.post("/api/billing/invoices/", {
+            "items": [
+                {"product_id": self.p1.id, "quantity": "1"},
+            ],
+        }, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, resp.content)
+        self.assertIn("idempotency_key", resp.data)
+        self.assertEqual(Invoice.objects.count(), 0)
+
+    def test_flutter_different_key_same_items_creates_separate_invoice(self):
+        c = self._auth(self.owner)
+        r1 = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k12-a",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "2"},
+            ],
+        }, format="json")
+        self.assertEqual(r1.status_code, status.HTTP_201_CREATED, r1.content)
+        self.p1.refresh_from_db()
+        stock_after_first = self.p1.stock_quantity
+        r2 = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k12-b",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "2"},
+            ],
+        }, format="json")
+        self.assertEqual(r2.status_code, status.HTTP_201_CREATED, r2.content)
+        self.assertNotEqual(r2.data["id"], r1.data["id"])
+        self.p1.refresh_from_db()
+        self.assertEqual(self.p1.stock_quantity, stock_after_first - Decimal("2"))
+
+    def test_flutter_retry_does_not_deduct_stock_twice(self):
+        c = self._auth(self.owner)
+        r1 = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k13",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "3"},
+            ],
+        }, format="json")
+        self.assertEqual(r1.status_code, status.HTTP_201_CREATED, r1.content)
+        self.p1.refresh_from_db()
+        stock_after_first = self.p1.stock_quantity
+        r2 = c.post("/api/billing/invoices/", {
+            "idempotency_key": "flutter-k13",
+            "items": [
+                {"product_id": self.p1.id, "quantity": "3"},
+            ],
+        }, format="json")
+        self.assertEqual(r2.status_code, status.HTTP_200_OK, r2.content)
+        self.assertEqual(r2.data["id"], r1.data["id"])
+        self.p1.refresh_from_db()
+        self.assertEqual(self.p1.stock_quantity, stock_after_first)
+
+

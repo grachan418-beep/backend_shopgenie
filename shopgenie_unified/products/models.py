@@ -24,6 +24,8 @@ class Product(models.Model):
     cost_price = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)])
     stock_quantity = models.DecimalField(max_digits=12, decimal_places=3, default=0, validators=[MinValueValidator(0)])
     unit = models.CharField(max_length=10, choices=Unit.choices, default=Unit.PIECE)
+    brand = models.CharField(max_length=100, blank=True, default='')
+    size = models.CharField(max_length=50, blank=True, default='')
     image_url = models.URLField(blank=True, default="")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)

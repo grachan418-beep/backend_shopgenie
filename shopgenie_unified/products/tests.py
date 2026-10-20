@@ -157,6 +157,67 @@ class ProductVisibilityTests(TestCase):
         self.assertIn("results", resp.data)
 
 
+class ProductCompatibilityTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(email="o@x.com", username="owner", password="pass12345", role="SHOP_OWNER")
+        self.shop = Shop.objects.create(owner=self.owner, name="Published Shop", status="PUBLISHED")
+        self.product = Product.objects.create(shop=self.shop, name="Pub Item", mrp=Decimal("10.00"), selling_price=Decimal("8.00"), cost_price=Decimal("5.00"), stock_quantity=Decimal("5"), status="PUBLISHED")
+        self.client = APIClient()
+
+    def test_public_response_has_store_id_as_string(self):
+        resp = self.client.get(f"/api/products/{self.product.id}/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.data["store_id"], str(self.shop.id))
+        self.assertIsInstance(resp.data["store_id"], str)
+
+    def test_public_response_price_maps_from_selling_price(self):
+        resp = self.client.get(f"/api/products/{self.product.id}/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.data["price"], "8.00")
+        self.assertEqual(resp.data["selling_price"], "8.00")
+
+    def test_public_response_has_legacy_fields(self):
+        resp = self.client.get(f"/api/products/{self.product.id}/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIn("shop", resp.data)
+        self.assertIn("selling_price", resp.data)
+        self.assertIn("mrp", resp.data)
+
+    def test_public_no_cost_price_or_owner_fields(self):
+        resp = self.client.get(f"/api/products/{self.product.id}/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertNotIn("cost_price", resp.data)
+        for field in ["owner", "owner_username", "email"]:
+            self.assertNotIn(field, resp.data)
+
+    def test_public_visibility_still_holds(self):
+        draft_shop_owner = User.objects.create_user(email="o2@x.com", username="o2", password="pass12345", role="SHOP_OWNER")
+        draft_shop = Shop.objects.create(owner=draft_shop_owner, name="Draft Shop", status="DRAFT")
+        draft_prod = Product.objects.create(shop=draft_shop, name="Draft Item", mrp=Decimal("10"), selling_price=Decimal("8"), cost_price=Decimal("5"), stock_quantity=Decimal("1"), status="PUBLISHED")
+        resp = self.client.get(f"/api/products/{draft_prod.id}/")
+        self.assertEqual(resp.status_code, 404, resp.content)
+
+
+class ShopCompatibilityTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(email="o@x.com", username="owner", password="pass12345", role="SHOP_OWNER")
+        self.shop = Shop.objects.create(owner=self.owner, name="Published Shop", status="PUBLISHED", business_hours="09:00 AM - 09:00 PM")
+        self.client = APIClient()
+
+    def test_public_shop_response_has_hours(self):
+        resp = self.client.get(f"/api/shops/{self.shop.id}/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.data["hours"], "09:00 AM - 09:00 PM")
+        self.assertEqual(resp.data["business_hours"], "09:00 AM - 09:00 PM")
+
+    def test_public_shop_no_private_fields(self):
+        resp = self.client.get(f"/api/shops/{self.shop.id}/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        for field in ["owner", "email", "owner_username"]:
+            self.assertNotIn(field, resp.data)
+
+
+
 
 class InventoryApiTests(TestCase):
     def setUp(self):
@@ -188,3 +249,64 @@ class InventoryApiTests(TestCase):
         other_product = Product.objects.create(shop=other_shop, name="P2", mrp=Decimal("10"), selling_price=Decimal("8"), cost_price=Decimal("5"), stock_quantity=Decimal("5"), status="PUBLISHED")
         res = self.client.post("/api/inventory/", {"product": other_product.id, "delta": "1", "reason": "RESTOCK"}, format="json")
         self.assertIn(res.status_code, (403, 400))
+
+
+class BrandSizeTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(email="o@x.com", username="owner", password="pass12345", role="SHOP_OWNER")
+        self.shop = Shop.objects.create(owner=self.owner, name="Published Shop", status="PUBLISHED")
+        self.product = Product.objects.create(shop=self.shop, name="Pub Item", brand="Coca-Cola", size="500 ml", mrp=Decimal("10.00"), selling_price=Decimal("8.00"), cost_price=Decimal("5.00"), stock_quantity=Decimal("5"), status="PUBLISHED")
+        self.client = APIClient()
+
+    def test_existing_product_brand_and_size_default_blank(self):
+        plain = Product.objects.create(shop=self.shop, name="Plain Item", mrp=Decimal("10"), selling_price=Decimal("8"), cost_price=Decimal("5"), stock_quantity=Decimal("1"), status="PUBLISHED")
+        self.assertEqual(plain.brand, "")
+        self.assertEqual(plain.size, "")
+
+    def test_public_response_includes_brand_and_size(self):
+        resp = self.client.get(f"/api/products/{self.product.id}/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.data["brand"], "Coca-Cola")
+        self.assertEqual(resp.data["size"], "500 ml")
+
+    def test_create_product_without_brand_size_is_valid(self):
+        c = APIClient(); c.force_authenticate(user=self.owner)
+        resp = c.post("/api/products/", {
+            "shop": self.shop.id, "name": "No Brand", "mrp": "10.00", "selling_price": "8.00",
+            "cost_price": "5.00", "stock_quantity": "1", "unit": "PIECE", "status": "PUBLISHED",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(resp.data.get("brand", ""), "")
+        self.assertEqual(resp.data.get("size", ""), "")
+
+    def test_create_product_with_brand_size(self):
+        c = APIClient(); c.force_authenticate(user=self.owner)
+        resp = c.post("/api/products/", {
+            "shop": self.shop.id, "name": "Branded", "brand": "Nike", "size": "L",
+            "mrp": "10.00", "selling_price": "8.00", "cost_price": "5.00",
+            "stock_quantity": "1", "unit": "PIECE", "status": "PUBLISHED",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(resp.data["brand"], "Nike")
+        self.assertEqual(resp.data["size"], "L")
+
+    def test_owner_can_update_brand_size(self):
+        c = APIClient(); c.force_authenticate(user=self.owner)
+        resp = c.patch(f"/api/products/{self.product.id}/", {"brand": "Pepsi", "size": "330 ml"}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.data["brand"], "Pepsi")
+        self.assertEqual(resp.data["size"], "330 ml")
+
+    def test_customer_cannot_update_product(self):
+        cust = User.objects.create_user(email="c@x.com", username="cust", password="pass12345", role="CUSTOMER")
+        c = APIClient(); c.force_authenticate(user=cust)
+        resp = c.patch(f"/api/products/{self.product.id}/", {"brand": "X"}, format="json")
+        self.assertIn(resp.status_code, (401, 403), resp.content)
+
+    def test_public_visibility_with_brand_size(self):
+        draft_shop_owner = User.objects.create_user(email="o2@x.com", username="o2", password="pass12345", role="SHOP_OWNER")
+        draft_shop = Shop.objects.create(owner=draft_shop_owner, name="Draft Shop", status="DRAFT")
+        draft_prod = Product.objects.create(shop=draft_shop, name="Draft Item", brand="X", size="Y", mrp=Decimal("10"), selling_price=Decimal("8"), cost_price=Decimal("5"), stock_quantity=Decimal("1"), status="PUBLISHED")
+        resp = self.client.get(f"/api/products/{draft_prod.id}/")
+        self.assertEqual(resp.status_code, 404, resp.content)
+
